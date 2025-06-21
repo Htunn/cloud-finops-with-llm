@@ -1,0 +1,27 @@
+# Core dependencies
+python-dotenv==1.0.0
+streamlit==1.32.0
+psycopg2-binary==2.9.9
+SQLAlchemy==2.0.27
+boto3==1.34.41
+pandas==2.2.0
+numpy==1.26.3
+matplotlib==3.8.2
+plotly==5.18.0
+
+# LLM and AI dependencies
+langchain>=0.1.0
+langchain-openai>=0.0.5
+langchain-community>=0.0.25
+langchain-core>=0.1.18
+langchain-huggingface>=0.0.2
+openai==1.12.0
+transformers==4.37.2
+torch==2.2.0
+accelerate==0.27.2
+bitsandbytes==0.42.0
+peft==0.8.2
+sentence-transformers==2.2.2
+
+# Database tools
+alembic==1.13.1
