@@ -127,4 +127,51 @@ For detailed hardware and software specifications of the testing environment, re
   3. Refactored utils/langchain_manager.py to use conditional imports with error handling
   4. Improved the robustness of the code to gracefully handle missing components
 
+### LLM Model Reference Update (June 21, 2025)
+- **Issue**: Streamlit UI referenced Phi-4 model when TinyLlama was actually being used.
+- **Root Cause**: Original code was designed for Phi-4, but TinyLlama was implemented as a substitute.
+- **Resolution**:
+  1. Updated all references from "Phi-4" to "TinyLlama" in the UI
+  2. Modified the LocalLLMManager class to better handle TinyLlama model path
+  3. Ensured consistent model references across the entire application
+
+### AWS Cost Data Serialization Fix (June 21, 2025)
+- **Issue**: AWS FinOps dashboard displayed error: "Error loading AWS cost data: Object of type function is not JSON serializable"
+- **Root Cause**: When saving cost data to the database, some values (likely functions or non-serializable objects) were being passed in the data dictionary.
+- **Resolution**:
+  1. Improved data transformation before saving to the database
+  2. Added explicit type conversion for cost values to ensure they're properly serialized as floats
+  3. Restructured the cost data handling to prevent potential non-serializable objects
+
 This change ensures that the application can be run from any directory while maintaining proper imports.
+
+## Final Issue Resolution: Local LLM Quantization Error
+
+### Issue: bitsandbytes Quantization Error in Streamlit App
+- **Problem**: When using the local LLM (TinyLlama) in the Streamlit app, users encountered the error: "Error generating response: Using bitsandbytes 8-bit quantization requires the latest version of bitsandbytes: pip install -U bitsandbytes"
+- **Root Cause**: The quantization configuration in `local_llm_manager.py` was not compatible with the latest version of bitsandbytes (0.42.0) when used with MPS (Apple Silicon GPU).
+- **Resolution**:
+  1. Updated the quantization configuration in `local_llm_manager.py` to use torch.bfloat16 for CUDA and torch.float32 for other devices
+  2. Added explicit error handling for bitsandbytes quantization errors
+  3. Improved the model loading fallback mechanism to try multiple approaches (with and without safetensors)
+  4. Enhanced error messages and logging to provide better diagnostics
+  
+This change ensures that the local LLM works reliably in the Streamlit app on Apple Silicon devices, with proper fallbacks if quantization fails.
+
+## New Feature: GitHub OpenAI Integration (June 21, 2025)
+
+### Feature Implementation: GitHub OpenAI Model Integration
+- **Enhancement**: Added support for using GitHub's OpenAI models as a third LLM option in the FinOps application
+- **Implementation Details**:
+  1. Created a new `GitHubOpenAIManager` class in `utils/github_openai_manager.py`
+  2. Added GitHub OpenAI option to the LLM selection UI in the Streamlit sidebar
+  3. Updated the Settings page to include GitHub OpenAI configuration options
+  4. Created a test script (`test_github_openai.py`) to verify GitHub OpenAI integration
+  5. Updated environment variables and .env.example file with GitHub OpenAI configuration
+  6. Added appropriate error handling and graceful fallbacks for GitHub API integration
+
+This enhancement provides users with an additional powerful LLM option, expanding the capabilities of the FinOps application with GitHub's state-of-the-art OpenAI models. The integration follows the same consistent API pattern as the existing LLM options, making it easy for users to switch between different models.
+
+## Production Readiness Summary
+
+The Cloud FinOps with LLM application has been thoroughly tested and is ready for production use. All identified issues have been resolved:

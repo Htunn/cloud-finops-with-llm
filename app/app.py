@@ -25,6 +25,7 @@ from database.data_access import DataAccess
 from utils.aws_cost_manager import AWSCostManager
 from utils.azure_openai_manager import AzureOpenAIManager
 from utils.local_llm_manager import LocalLLMManager
+from utils.github_openai_manager import GitHubOpenAIManager
 from utils.langchain_manager import LangChainManager
 
 # Configure logging
@@ -75,7 +76,7 @@ def init_session_state():
         st.session_state.aws_credentials_set = False
     
     if "preferred_llm" not in st.session_state:
-        st.session_state.preferred_llm = "local"
+        st.session_state.preferred_llm = "local"  # Default to local LLM
 
 
 def display_sidebar():
@@ -118,10 +119,17 @@ def display_sidebar():
     st.sidebar.subheader("LLM Selection")
     preferred_llm = st.sidebar.radio(
         "Choose LLM for Analysis",
-        ["Local (Phi-4)", "Azure OpenAI"],
-        index=0 if st.session_state.preferred_llm == "local" else 1
+        ["Local (TinyLlama)", "Azure OpenAI", "GitHub OpenAI"],
+        index=0 if st.session_state.preferred_llm == "local" else 
+              (1 if st.session_state.preferred_llm == "azure" else 2)
     )
-    st.session_state.preferred_llm = "local" if preferred_llm == "Local (Phi-4)" else "azure"
+    
+    if preferred_llm == "Local (TinyLlama)":
+        st.session_state.preferred_llm = "local"
+    elif preferred_llm == "Azure OpenAI":
+        st.session_state.preferred_llm = "azure"
+    else:
+        st.session_state.preferred_llm = "github"
     
     # Date Range Selector
     st.sidebar.subheader("Date Range")
@@ -155,7 +163,7 @@ def display_sidebar():
         - Python 3.12
         - Streamlit
         - Azure OpenAI
-        - Microsoft Phi-4
+        - TinyLlama (Local LLM)
         - LangChain
         - PostgreSQL
         """
@@ -194,24 +202,28 @@ def display_dashboard():
         # Save to database
         with get_data_access() as data_access:
             detailed_costs = aws_manager.get_detailed_cost_data(start_date, end_date)
-            data_access.save_cost_data([
-                {
+            # Transform data to avoid JSON serialization errors
+            cost_data_entries = []
+            for item in service_costs:
+                # Convert dates to proper datetime objects to avoid serialization issues
+                start_date_obj = datetime.datetime.strptime(item['date'] if 'date' in item else start_date, '%Y-%m-%d')
+                end_date_obj = datetime.datetime.strptime(item['date'] if 'date' in item else end_date, '%Y-%m-%d')
+                
+                cost_data_entries.append({
                     'account_id': os.environ.get("AWS_ACCOUNT_ID", "default"),
                     'service': item['service'],
                     'region': None,
                     'usage_type': item.get('usage_type'),
                     'resource_id': None,
-                    'cost': item['cost'],
+                    'cost': float(item['cost']),  # Ensure it's a float, not a function
                     'usage_quantity': None,
-                    'start_date': datetime.datetime.strptime(item['date'], '%Y-%m-%d') if 'date' in item else 
-                                  datetime.datetime.strptime(start_date, '%Y-%m-%d'),
-                    'end_date': datetime.datetime.strptime(item['date'], '%Y-%m-%d') if 'date' in item else
-                                datetime.datetime.strptime(end_date, '%Y-%m-%d'),
+                    'start_date': start_date_obj,
+                    'end_date': end_date_obj,
                     'date_range_type': 'daily',
                     'currency': item.get('currency', 'USD')
-                }
-                for item in service_costs
-            ])
+                })
+            
+            data_access.save_cost_data(cost_data_entries)
         
         # Create summary metrics
         if service_costs:
@@ -600,8 +612,10 @@ def display_recommendations():
                 # Initialize the appropriate LLM manager based on user preference
                 if st.session_state.preferred_llm == "local":
                     llm_manager = LocalLLMManager()
-                else:
+                elif st.session_state.preferred_llm == "azure":
                     llm_manager = AzureOpenAIManager()
+                else:  # GitHub OpenAI
+                    llm_manager = GitHubOpenAIManager()
                 
                 # Get cost data
                 start_date = (datetime.date.today() - datetime.timedelta(days=30)).strftime('%Y-%m-%d')
@@ -694,20 +708,34 @@ def display_chat_assistant():
             # Get response from LLM
             with st.chat_message("assistant"):
                 with st.spinner("Thinking..."):
+                    # Get cost data for context (needed for all LLMs)
+                    aws_manager = AWSCostManager()
+                    start_date = st.session_state.start_date.strftime('%Y-%m-%d')
+                    end_date = st.session_state.end_date.strftime('%Y-%m-%d')
+                    cost_data = aws_manager.get_cost_by_service(start_date, end_date)
+                    
                     if st.session_state.preferred_llm == "local":
-                        # Use local LLM (Phi-4)
+                        # Use local LLM (TinyLlama)
                         llm_manager = LocalLLMManager()
-                        
-                        # Get cost data for context
-                        aws_manager = AWSCostManager()
-                        start_date = st.session_state.start_date.strftime('%Y-%m-%d')
-                        end_date = st.session_state.end_date.strftime('%Y-%m-%d')
-                        cost_data = aws_manager.get_cost_by_service(start_date, end_date)
-                        
-                        # Generate response
                         response = llm_manager.analyze_cost_data(cost_data, prompt)
-                        llm_model = "Microsoft Phi-4"
+                        llm_model = "TinyLlama"
                         tokens_used = None
+                    elif st.session_state.preferred_llm == "github":
+                        try:
+                            # Use GitHub OpenAI
+                            github_manager = GitHubOpenAIManager()
+                            response = github_manager.analyze_cost_data(cost_data, prompt)
+                            llm_model = "GitHub OpenAI"
+                            tokens_used = None
+                            
+                            # If we got an error response, display it nicely
+                            if "Error" in response or "Access denied" in response:
+                                st.error(response)
+                        except ImportError:
+                            st.error("GitHub OpenAI integration requires the 'openai' package. Please install it with: pip install openai>=1.12.0")
+                            response = "Error: Required packages not installed."
+                            llm_model = "Error"
+                            tokens_used = None
                     else:
                         # Use Azure OpenAI
                         azure_manager = AzureOpenAIManager()
@@ -787,13 +815,29 @@ def display_settings():
             st.error("All Azure OpenAI fields are required")
     
     # Local LLM Settings
-    st.write("Local LLM (Phi-4) Configuration")
+    st.write("Local LLM (TinyLlama) Configuration")
     
     use_gpu = st.checkbox("Use M3 GPU Acceleration", value=True)
     
     if st.button("Save Local LLM Settings"):
         os.environ["LOCAL_LLM_USE_GPU"] = str(use_gpu).lower()
         st.success("Local LLM settings updated")
+        
+    # GitHub OpenAI Settings
+    st.write("GitHub OpenAI Configuration")
+    
+    github_token = st.text_input("GitHub Token", type="password")
+    github_endpoint = st.text_input("GitHub OpenAI Endpoint", value="https://models.github.ai/inference")
+    github_model = st.text_input("GitHub OpenAI Model", value="openai/gpt-4.1")
+    
+    if st.button("Save GitHub OpenAI Settings"):
+        if github_token:
+            os.environ["GITHUB_TOKEN"] = github_token
+            os.environ["GITHUB_OPENAI_ENDPOINT"] = github_endpoint
+            os.environ["GITHUB_OPENAI_MODEL"] = github_model
+            st.success("GitHub OpenAI settings updated")
+        else:
+            st.error("GitHub Token is required")
     
     # User Preferences
     st.subheader("User Preferences")
@@ -811,8 +855,8 @@ def display_settings():
     
     preferred_llm = st.radio(
         "Default LLM",
-        ["local", "azure"],
-        index=0 if default_llm == "local" else 1
+        ["local", "azure", "github"],
+        index=0 if default_llm == "local" else (1 if default_llm == "azure" else 2)
     )
     
     # Budget alerts

@@ -1,5 +1,5 @@
 """
-Local LLM (Microsoft Phi-4) integration module with M3 GPU acceleration.
+Local LLM (TinyLlama) integration module with M3 GPU acceleration.
 """
 import os
 import logging
@@ -17,7 +17,7 @@ load_dotenv()
 
 
 class LocalLLMManager:
-    """Class to manage local LLM (Microsoft Phi-4) interactions."""
+    """Class to manage local LLM (TinyLlama) interactions."""
     
     def __init__(self, model_path: Optional[str] = None) -> None:
         """
@@ -26,7 +26,8 @@ class LocalLLMManager:
         Args:
             model_path: Path to the model, defaults to value from environment variable
         """
-        self.model_path = model_path or os.getenv("LOCAL_LLM_MODEL_PATH", "microsoft/Phi-4-mini-4k-instruct")
+        # Default to TinyLlama model if not specified
+        self.model_path = model_path or os.getenv("LOCAL_LLM_MODEL_PATH", "models/tiny-llama")
         self.use_gpu = os.getenv("LOCAL_LLM_USE_GPU", "true").lower() == "true"
         
         self.device = "mps" if torch.backends.mps.is_available() and self.use_gpu else "cpu"
@@ -37,28 +38,74 @@ class LocalLLMManager:
             logger.info(f"Loading model from {self.model_path}...")
             
             # Configure quantization for efficient loading
-            quant_config = BitsAndBytesConfig(
-                load_in_8bit=True if self.device == "mps" else False,
-                bnb_4bit_quant_type="nf4",
-                bnb_4bit_compute_dtype=torch.bfloat16,
-                bnb_4bit_use_double_quant=True
-            )
+            # Don't use quantization on MPS (Apple Silicon) as it's not fully supported
+            quant_config = None
+            if self.device == "cpu":
+                try:
+                    # Updated config for compatibility with latest bitsandbytes
+                    quant_config = BitsAndBytesConfig(
+                        load_in_4bit=True,
+                        bnb_4bit_quant_type="nf4",
+                        bnb_4bit_compute_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
+                        bnb_4bit_use_double_quant=True
+                    )
+                    logger.info("Created 4-bit quantization config")
+                except Exception as e:
+                    logger.warning(f"Failed to create quantization config: {e}. Falling back to non-quantized model.")
             
             # Load tokenizer
             self.tokenizer = AutoTokenizer.from_pretrained(self.model_path)
             
-            # Load model
-            self.model = AutoModelForCausalLM.from_pretrained(
-                self.model_path,
-                device_map=self.device,
-                torch_dtype=torch.float16 if self.device == "mps" else torch.float32,
-                quantization_config=quant_config if self.device == "mps" else None
-            )
-            
-            logger.info("Local LLM model loaded successfully.")
+            try:
+                # Load model - use float16 for MPS without quantization for better compatibility
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    self.model_path,
+                    device_map=self.device,
+                    torch_dtype=torch.float16 if self.device == "mps" else torch.float32,
+                    quantization_config=quant_config
+                )
+                logger.info("Local LLM model loaded successfully.")
+            except ValueError as ve:
+                if "bitsandbytes" in str(ve) and "8-bit" in str(ve):
+                    logger.warning("Quantization error with bitsandbytes. Retrying without quantization.")
+                    self.model = AutoModelForCausalLM.from_pretrained(
+                        self.model_path,
+                        device_map=self.device,
+                        torch_dtype=torch.float16 if self.device == "mps" else torch.float32
+                    )
+                    logger.info("Local LLM model loaded successfully without quantization.")
+                else:
+                    raise
         except Exception as e:
             logger.error(f"Error loading local LLM model: {e}")
-            raise
+            
+            # Try to load without any quantization as a fallback
+            try:
+                logger.info("Attempting to load model without quantization as a fallback...")
+                
+                # First attempt with safetensors (often more reliable)
+                try:
+                    self.model = AutoModelForCausalLM.from_pretrained(
+                        self.model_path,
+                        device_map=self.device if self.device == "mps" else "auto",
+                        torch_dtype=torch.float16 if self.device == "mps" else torch.float32,
+                        trust_remote_code=True,
+                        use_safetensors=True
+                    )
+                except Exception:
+                    # If safetensors fails, try without it
+                    self.model = AutoModelForCausalLM.from_pretrained(
+                        self.model_path,
+                        device_map=self.device if self.device == "mps" else "auto",
+                        torch_dtype=torch.float16 if self.device == "mps" else torch.float32,
+                        trust_remote_code=True,
+                        use_safetensors=False
+                    )
+                    
+                logger.info("Local LLM model loaded successfully with fallback method.")
+            except Exception as second_error:
+                logger.error(f"Fallback loading also failed: {second_error}")
+                raise RuntimeError(f"Failed to load the model: {e}. Fallback attempt also failed: {second_error}")
     
     def generate_response(self, prompt: str, max_length: int = 1000) -> str:
         """
